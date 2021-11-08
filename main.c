@@ -17,9 +17,9 @@ void die(const char* msg)
     exit(err);
 }
 
-void run_child(char *argv0)
+void run_child(char *argv)
 {
-    char *file = argv0;
+    char *file = argv;
 
     unsigned argc = 0;
     char *args[128] = { 0 };
@@ -47,39 +47,66 @@ int main(int argc, char **argv)
         run_child(argv[1]);
     }
 
-    int pipefd[2];
-    if (pipe2(pipefd, O_CLOEXEC) < 0) {
-        die("Pipe failed");
+    pid_t *children = malloc(argc * sizeof(pid_t));
+    if (!children) {
+        die("Malloc children failed");
     }
+    memset(children, 0, argc * sizeof(pid_t));
 
-    pid_t pid = fork();
-    if (pid < 0) {
-        die("Fork failed");
-    }
+    int next_in;
+    int in = STDIN_FILENO;
+    int out;
 
-    if (pid == 0) { // Running as child
-        if (dup2(pipefd[1], STDOUT_FILENO) < 0) {
-            die("Dup stdout failed");
+    for (int i = 0; i < argc; ++i) {
+        if (i < argc - 1) {
+            int pipefd[2];
+            if (pipe2(pipefd, O_CLOEXEC) < 0) {
+                die("Pipe failed");
+            }
+            next_in = pipefd[0];
+            out = pipefd[1];
+        } else {
+            next_in = -1;
+            out = STDOUT_FILENO;
         }
-        run_child(argv[1]);
+
+        pid_t pid = fork();
+        if (pid < 0) {
+            die("Fork failed");
+        }
+
+        if (pid == 0) { // Running as child
+            if (dup2(in, STDIN_FILENO) < 0) {
+                die("Dup stdin failed");
+            }
+
+            if (dup2(out, STDOUT_FILENO) < 0) {
+                die("Dup stdout failed");
+            }
+
+            run_child(argv[i]);
+        }
+
+        if (in != STDIN_FILENO) {
+            close(in);
+        }
+
+        if (out != STDOUT_FILENO) {
+            close(out);
+        }
+
+        children[i] = pid;
+        in = next_in;
     }
 
-    // Running as parent
-
-    int status;
-    if (waitpid(pid, &status, 0) != pid) {
-        die("Wait for child failed");
+    for (int i = 0; i < argc; ++i) {
+        int status;
+        if (waitpid(children[i], &status, 0) != children[i]) {
+            die("Wait for child failed");
+        }
     }
 
-    if (dup2(pipefd[0], STDIN_FILENO) < 0) {
-        die("Dup stdin failed");
-    }
-
-    argv[1] = argv[0]; // Skip child command we just ran
-    execvp(argv[1], &argv[1]);
-    // We should never reach this point
-    die("Exec failed");
-
+    free(children);
     return 0;
 }
 
